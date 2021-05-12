@@ -1,6 +1,8 @@
 #include <stm32f0xx.h>
-
+#include <stdlib.h>
 #define FILTER_MAX_CNT 10
+#define DMA_ADC_BUFFER_SIZE 128
+
 
 typedef struct PatternS{
 	unsigned short frames[8];
@@ -47,6 +49,10 @@ volatile static int frame = 0;
 volatile static PatternS patternStruct;
 //volatile static int isDataPushedToSPI = 1;
 volatile static Display displayS;
+volatile static int* ADC_array;
+volatile int half_of_DMA_array;
+
+
 
 void ButtonsCheker(void){
 	if(stateOfKeyboardChecker == 0) {
@@ -151,32 +157,14 @@ void ChangeDisplayFrame(){
 void PushFrame(int curr_frame, PatternS pat){
 		if (!pat.showframe[curr_frame]) SPI2->DR = 0;
 		else SPI2->DR = pat.frames[curr_frame];
-		/*switch(curr_frame){
-			case 0:{
-				if (!pat.showframe[0]) SPI2->DR = 0;
-				SPI2->DR = pat.frames[0];
-				break;
-			}
-			case 1:{
-				if (!pat.showframe[1]) SPI2->DR = 0;
-				SPI2->DR = pat.frames[1];
-				break;
-			}
-			case 2:{
-				if (!pat.showframe[2]) SPI2->DR = 0;
-				SPI2->DR = pat.frames[2];
-				break;
-			}
-		}*/
 }
 
 void SysTick_Handler(void){ 
-	//ButtonsCheker();
+	ButtonsCheker();
 }
 
 
-static void SPI_init()
-{
+static void SPI_init(){
 	GPIOA->MODER |= GPIO_MODER_MODER8_0;
 	
 	// podat` taktirovanie na SPI
@@ -201,89 +189,9 @@ static void SPI_init()
 	//Control Register
 	SPI2->CR2 |= SPI_CR2_RXNEIE;
 	
-	
-	SPI2->DR = 0x0111;
-	
+	SPI2->DR = 0x0111; // to catch first interrupt
 }
 
-
-/*#define RIGHT_BUTTON 1
-#define LEFT_BUTTON  2
-#define UP_BUTTON    3
-#define DOWN_BUTTON  4
-*/
-/*
-static void displayCross(){
-	unsigned char posX = 0;
-	unsigned char posY = 0;
-	unsigned short data = 0;
-	while(1)
-	{
-		if(button3){ // Up
-			posY--;
-			posY%=8;
-			button3 = 0;
-		}
-		if(button1){ // Right
-			posX ++;
-			posX%=8;
-			button1 = 0;
-		}
-					
-		if(button2){ // Left
-			posX --;
-			posX%=8;
-			button2 = 0;
-		}
-		if(button4){ // Down
-			posY++;
-			posY%=8;
-			button4 = 0;
-		}
-		
-		 
-		
-			unsigned char pattern = 0;
-			unsigned char column = 0;
-			// FRAME 0
-			if	(posY == 0) 
-				patternStruct.showframe0 = 0;
-			else{
-				pattern = 0;
-				if (posX == 0)
-					pattern = 0x01;
-				else
-					pattern = 0x02 << posX-1; // ...x...
-				column  = 0x01 << posY-1;
-				patternStruct.frame0 = ((unsigned short) pattern << 8) | column;
-				patternStruct.showframe0 = 1;
-			}
-			// FRAME 1
-			pattern = 0;
-			if (posX == 0)
-				pattern = 0x03;
-			else
-				pattern = 0x07 << posX-1; // ..xxx..
-			column  = 0x01 << posY;
-			patternStruct.frame1 = ((unsigned short) pattern << 8) | column;
-			patternStruct.showframe1 = 1;
-			// FRAME 2
-			if	(posY >= 7) patternStruct.showframe2 = 0;
-			else{
-				pattern = 0;
-				if (posX == 0)
-					pattern = 0x01;
-				else
-					pattern = 0x02 << posX-1; // ...x...
-				column  = 0x01 << posY+1;
-				patternStruct.frame2 = ((unsigned short) pattern << 8) | column;
-				patternStruct.showframe2 = 1;
-			}
-		}
-	
-}
-
-*/
 
 void SPI2_IRQHandler(){
 	if (SPI2->SR & SPI_SR_RXNE){ // Data was received
@@ -338,9 +246,9 @@ void adc_enable(){
 void displayADC(){
 	ADC1->CR |= ADC_CR_ADSTART;
 	while (1){
+		
 		while ((ADC1->ISR & ADC_ISR_EOC) == 0) /* Wait end of conversion */
 		{
-			/* For robust implementation, add here time-out management */
 		}
 		volatile uint32_t ADC_Result = ADC1->DR;
 		
@@ -348,21 +256,22 @@ void displayADC(){
 		
 		for(int wait = 0; wait < 50000; wait++);
 		
-		for(int i = 7; i>1; i--){
-			
-			displayS.raws[i] = displayS.raws[i-1];
-			
-		}
 		displayS.raws[0] = 1 << ADC_level;
-		displayS.raws[1] = 1 << ADC_level;
+		
+		for(int i = 7; i>0; i--){
+			displayS.raws[i] = displayS.raws[i-1];
+		}
 	}
-	
 }
 
 void adc_Init(){
 		
 	
 	adc_calibration();
+	
+	// DMA Machine   // <Ex.: p.941>
+	ADC1->CFGR1 |= ADC_CFGR1_DMAEN;  // DMA enable
+	ADC1->CFGR1 |= ADC_CFGR1_DMACFG; // DMA circular mode
 	
 	// taktirovanie na ADC
 	RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
@@ -372,19 +281,50 @@ void adc_Init(){
   ADC1->CFGR2 &= ~ADC_CFGR2_CKMODE_Msk;
 
 	ADC1->CFGR1  |= ADC_CFGR1_RES_1; // 8 bit resolution
-	GPIOC->BSRR = GPIO_BSRR_BS_8;    // Yellow light
-	
 	
 	adc_enable();
 	
 	ADC1->CHSELR |= ADC_CHSELR_CHSEL1; // PA1
 	ADC1->CFGR1  |= ADC_CFGR1_CONT;   // Continuous conversion mode (CONT=1) <13.4.8>
 	
-	GPIOC->BSRR = GPIO_BSRR_BS_6;  // Red light
 	
 	RCC->AHBENR |= RCC_AHBENR_GPIOAEN; // Clock on PA1
 	GPIOA->MODER |= GPIO_MODER_MODER1; // Analog mode on PA1
 
+	
+}
+
+static void DMA_Init(){
+	/* (1) Enable the peripheral clock on DMA */
+	/* (2) Enable DMA transfer on ADC */
+	/* (3) Configure the peripheral data register address */
+	/* (4) Configure the memory address */
+	/* (5) Configure the number of DMA tranfer to be performs on channel 1 */
+	/* (6) Configure increment, size and interrupts + circular mode */
+	/* (7) Enable DMA Channel 1 */
+	RCC->AHBENR |= RCC_AHBENR_DMA1EN; /* (1) */
+	ADC1->CFGR1 |= ADC_CFGR1_DMAEN; /* (2) */
+	DMA1_Channel1->CPAR = (uint32_t) (&(ADC1->DR)); /* (3) */
+	DMA1_Channel1->CMAR = (uint32_t)(ADC_array); /* (4) */
+	DMA1_Channel1->CNDTR = DMA_ADC_BUFFER_SIZE; /* (5) */
+	DMA1_Channel1->CCR |= DMA_CCR_MINC | DMA_CCR_MSIZE_0 | DMA_CCR_PSIZE_0
+												| DMA_CCR_HTIE | DMA_CCR_TCIE | DMA_CCR_CIRC; /* (6) */
+	DMA1_Channel1->CCR |= DMA_CCR_EN; /* (7) */
+	
+	/* Configure NVIC for DMA */
+	/* Enable Interrupt on DMA Channel 1 */
+	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+}
+
+
+void DMA1_Channel1_IRQHandler(){
+	GPIOC->BSRR = GPIO_BSRR_BS_6;  // Red light
+	half_of_DMA_array++;
+	half_of_DMA_array%=2;
+	if (DMA1->ISR & DMA_ISR_HTIF1)
+		DMA1->IFCR |= DMA_IFCR_CHTIF1;
+	if (DMA1->ISR & DMA_ISR_TCIF1)
+		DMA1->IFCR |= DMA_IFCR_CTCIF1;
 }
 
 int main(void){
@@ -405,6 +345,10 @@ int main(void){
 	
 	adc_Init();
 	
+	ADC_array = (int*)malloc(DMA_ADC_BUFFER_SIZE * sizeof(int));
+	
+	DMA_Init();
+	half_of_DMA_array = 1;
 	displayADC();
 	return 0;
 	
