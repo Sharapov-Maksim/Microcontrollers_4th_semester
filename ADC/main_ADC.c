@@ -49,7 +49,7 @@ volatile static int frame = 0;
 volatile static PatternS patternStruct;
 //volatile static int isDataPushedToSPI = 1;
 volatile static Display displayS;
-volatile static int* ADC_array;
+volatile static uint32_t ADC_array[DMA_ADC_BUFFER_SIZE];
 volatile int half_of_DMA_array;
 
 
@@ -247,14 +247,15 @@ void displayADC(){
 	ADC1->CR |= ADC_CR_ADSTART;
 	while (1){
 		
-		while ((ADC1->ISR & ADC_ISR_EOC) == 0) /* Wait end of conversion */
-		{
+		int ADC_Result = 0;
+		for(int i = 0; i<DMA_ADC_BUFFER_SIZE/2;i++){
+			ADC_Result += ADC_array[i + half_of_DMA_array * (DMA_ADC_BUFFER_SIZE/2)];
 		}
-		volatile uint32_t ADC_Result = ADC1->DR;
+		ADC_Result /= (DMA_ADC_BUFFER_SIZE/2);
 		
 		volatile uint32_t ADC_level = (ADC_Result & 0xE0)>>5;
 		
-		for(int wait = 0; wait < 50000; wait++);
+		for(int i = 0; i < 40000; i++){}
 		
 		displayS.raws[0] = 1 << ADC_level;
 		
@@ -265,13 +266,7 @@ void displayADC(){
 }
 
 void adc_Init(){
-		
-	
 	adc_calibration();
-	
-	// DMA Machine   // <Ex.: p.941>
-	ADC1->CFGR1 |= ADC_CFGR1_DMAEN;  // DMA enable
-	ADC1->CFGR1 |= ADC_CFGR1_DMACFG; // DMA circular mode
 	
 	// taktirovanie na ADC
 	RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
@@ -282,15 +277,18 @@ void adc_Init(){
 
 	ADC1->CFGR1  |= ADC_CFGR1_RES_1; // 8 bit resolution
 	
+	// DMA Machine   // <Ex.: p.941>
+	ADC1->CFGR1 |= ADC_CFGR1_DMAEN;  // DMA enable
+	ADC1->CFGR1 |= ADC_CFGR1_DMACFG; // DMA circular mode
+	
 	adc_enable();
 	
 	ADC1->CHSELR |= ADC_CHSELR_CHSEL1; // PA1
 	ADC1->CFGR1  |= ADC_CFGR1_CONT;   // Continuous conversion mode (CONT=1) <13.4.8>
-	
+	ADC1->CFGR1  |= ADC_CFGR1_OVRMOD;
 	
 	RCC->AHBENR |= RCC_AHBENR_GPIOAEN; // Clock on PA1
 	GPIOA->MODER |= GPIO_MODER_MODER1; // Analog mode on PA1
-
 	
 }
 
@@ -307,7 +305,7 @@ static void DMA_Init(){
 	DMA1_Channel1->CPAR = (uint32_t) (&(ADC1->DR)); /* (3) */
 	DMA1_Channel1->CMAR = (uint32_t)(ADC_array); /* (4) */
 	DMA1_Channel1->CNDTR = DMA_ADC_BUFFER_SIZE; /* (5) */
-	DMA1_Channel1->CCR |= DMA_CCR_MINC | DMA_CCR_MSIZE_0 | DMA_CCR_PSIZE_0
+	DMA1_Channel1->CCR |= DMA_CCR_MINC | DMA_CCR_MSIZE_1 | DMA_CCR_PSIZE_0
 												| DMA_CCR_HTIE | DMA_CCR_TCIE | DMA_CCR_CIRC; /* (6) */
 	DMA1_Channel1->CCR |= DMA_CCR_EN; /* (7) */
 	
@@ -318,7 +316,7 @@ static void DMA_Init(){
 
 
 void DMA1_Channel1_IRQHandler(){
-	GPIOC->BSRR = GPIO_BSRR_BS_6;  // Red light
+	//GPIOC->BSRR = GPIO_BSRR_BS_6;  // Red light
 	half_of_DMA_array++;
 	half_of_DMA_array%=2;
 	if (DMA1->ISR & DMA_ISR_HTIF1)
@@ -341,14 +339,18 @@ int main(void){
 		displayS.raws[i] = 0;
 	}
 	
+	for(int i = 0; i<DMA_ADC_BUFFER_SIZE; i++){
+		ADC_array[0] = 0;
+	}
+	
 	SPI_init();
 	
 	adc_Init();
 	
-	ADC_array = (int*)malloc(DMA_ADC_BUFFER_SIZE * sizeof(int));
 	
 	DMA_Init();
 	half_of_DMA_array = 1;
+	
 	displayADC();
 	return 0;
 	
